@@ -1,24 +1,46 @@
 // evaluate.js — geofence evaluation for every location ping (Mongo version).
+// Supports 15-min buffered batches: each point carries its own client
+// timestamp (`atMs`), so violations keep true start/end times even though
+// the batch arrives up to 15 min after the guard left the radius.
 const cfg = require('../config');
 const Location = require('../models/Location.model');
 const notify = require('./notify.service');
 const monitor = require('./monitor.service');
 const { distanceMeters } = require('../utils/geo');
 
-async function evaluate(guard, att, site, { lat, lng, accuracy }) {
+async function evaluate(guard, att, site, { lat, lng, accuracy }, atMs = null) {
+  // Client clock wins when sane; server time is the fallback.
+  const at = Number.isFinite(atMs) ? new Date(atMs) : new Date();
   const now = new Date();
   const dist = distanceMeters(lat, lng, site.lat, site.lng);
   const d = Math.round(dist);
 
-  att.lastSeenAt = now.toISOString();
-  att.lastSeenMs = now.getTime();
-  att.lastLocation = { lat, lng, accuracy, distanceMeters: d };
+  // Late / duplicate batch arriving after newer data: keep the breadcrumb
+  // but don't let stale points rewind the zone/violation state.
+  if (Number.isFinite(att.lastSeenMs) && at.getTime() < att.lastSeenMs - 30000) {
+    await Location.create({
+      attendanceId: att._id, guardId: guard._id, lat, lng, accuracy,
+      distanceMeters: d, time: at.toISOString(),
+    });
+    const outside = att.zone === 'outside';
+    return {
+      ok: true, zone: att.zone, distanceMeters: d, radiusMeters: site.radiusMeters,
+      stale: true,
+      ...(outside && { warning: 'You are outside your assigned area. Return immediately.' }),
+    };
+  }
+
+  if (!Number.isFinite(att.lastSeenMs) || at.getTime() >= att.lastSeenMs) {
+    att.lastSeenAt = at.toISOString();
+    att.lastSeenMs = at.getTime();
+    att.lastLocation = { lat, lng, accuracy, distanceMeters: d };
+  }
   att.signal = 'ok';
   att.noSignalAlerted = false;
 
   await Location.create({
     attendanceId: att._id, guardId: guard._id, lat, lng, accuracy,
-    distanceMeters: d, time: att.lastSeenAt,
+    distanceMeters: d, time: at.toISOString(),
   });
 
   let ignored = null;
@@ -28,18 +50,18 @@ async function evaluate(guard, att, site, { lat, lng, accuracy }) {
     att.outsideCount += 1;
     if (att.outsideCount >= cfg.OUTSIDE_READINGS_TO_ALERT && att.zone !== 'outside') {
       att.zone = 'outside';
-      att.violations.push({ startedAt: att.lastSeenAt, endedAt: null, seconds: 0, maxDistance: d, escalated: false });
+      att.violations.push({ startedAt: at.toISOString(), endedAt: null, seconds: 0, maxDistance: d, escalated: false });
       await notify.raiseAlert(guard, 'LEFT_AREA',
         `${guard.name} is ${d}m from "${site.name}" (allowed ${site.radiusMeters}m)`,
         { attendanceId: att._id, distanceMeters: d, lat, lng });
-      notify.toGuard(guard.id, 'warning', {
+      notify.toGuard(guard._id || guard.id, 'warning', {
         message: `You left your assigned area. Return to "${site.name}" immediately.`, distanceMeters: d,
       });
     }
     const v = monitor.currentViolation(att);
     if (v) {
       v.maxDistance = Math.max(v.maxDistance, d);
-      const secs = (now - new Date(v.startedAt)) / 1000;
+      const secs = (at - new Date(v.startedAt)) / 1000;
       if (!v.escalated && secs >= cfg.ESCALATE_AFTER_SEC) {
         v.escalated = true;
         await notify.raiseAlert(guard, 'STILL_OUTSIDE',
@@ -50,7 +72,7 @@ async function evaluate(guard, att, site, { lat, lng, accuracy }) {
   } else {
     att.outsideCount = 0;
     if (att.zone === 'outside') {
-      const v = monitor.closeViolation(att, now);
+      const v = monitor.closeViolation(att, at);
       att.zone = 'inside';
       await notify.raiseAlert(guard, 'RETURNED',
         `${guard.name} is back inside "${site.name}" after ${v ? v.seconds : 0}s`,
@@ -60,7 +82,7 @@ async function evaluate(guard, att, site, { lat, lng, accuracy }) {
 
   await att.save();
   notify.toAdmins('guard:update', {
-    guardId: guard.id, name: guard.name, attendanceId: att.id, zone: att.zone,
+    guardId: guard._id || guard.id, name: guard.name, attendanceId: att._id || att.id, zone: att.zone,
     signal: att.signal, lat, lng, distanceMeters: d, lastSeenAt: att.lastSeenAt,
   });
 

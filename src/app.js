@@ -14,7 +14,7 @@ function createApp() {
     if (req.method === 'OPTIONS') return res.sendStatus(204);
     next();
   });
-  app.use(express.json({ limit: '100kb' }));
+  app.use(express.json({ limit: '256kb' })); // room for 15-min GPS batches (~45-200 pts)
 
   app.use('/api/auth', require('./routes/auth.routes'));
   app.use('/api/admin', require('./routes/admin.routes'));

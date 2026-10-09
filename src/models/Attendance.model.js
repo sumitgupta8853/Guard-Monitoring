@@ -59,6 +59,7 @@ const attendanceSchema = new mongoose.Schema(
 
 attendanceSchema.index({ guardId: 1, date: 1 });
 attendanceSchema.index({ guardId: 1, checkOutAt: 1 });
+
 attendanceSchema.index({ checkOutAt: 1, lastSeenMs: 1 });
 
 withId(attendanceSchema);

@@ -26,9 +26,9 @@ scripts/migrate-json-to-mongo.js   # one-shot import from old ./data/db.json
 1. **Admin** logs in, creates a **site** (center point + radius) and **guard profiles** (name, phone, CNIC, address, emergency contact, shift, profile photo, login).
 2. **Guard** logs in and sees their own profile and assigned site.
 3. **Attendance starts only when the guard sends a live photo and a GPS position inside the radius.** Outside the radius, check-in is refused.
-4. While on duty the guard's app sends location every 10-30 s. If the guard leaves the radius:
-   - a `LEFT_AREA` alert goes to the admin instantly (Socket.IO, plus optional webhook)
-   - the guard gets a live `warning` and every ping response says "return immediately"
+4. While on duty the guard's app records GPS every ~20 s locally and uploads the buffered array every 15 min (`POST /api/guard/location` with `{points: [...]}`). Points replay oldest-first; if any leave the radius:
+   - a `LEFT_AREA` alert goes to the admin (Socket.IO, plus optional webhook) when the batch arrives — up to ~15 min after the guard actually left
+   - the guard gets a live `warning` and every batch response says "return immediately"
    - the time spent outside is recorded on that day's attendance as a violation
    - `STILL_OUTSIDE` is raised if they stay out for 5 minutes (configurable)
    - `RETURNED` is raised when they come back
@@ -66,8 +66,10 @@ node scripts/migrate-json-to-mongo.js ./data
 | `TZ` | server zone | used for "today" and shift times |
 | `UPLOAD_DIR` | `./data` | photos stored under `<UPLOAD_DIR>/uploads` |
 | `WEBHOOK_URL` | none | every alert is POSTed here |
-| `OUTSIDE_READINGS_TO_ALERT` | 2 | consecutive outside pings before a violation |
-| `NO_SIGNAL_AFTER_SEC` | 120 | `NO_SIGNAL` alert if on-duty guard stops reporting |
+| `OUTSIDE_READINGS_TO_ALERT` | 2 | consecutive outside points (inside one batch counts) before a violation |
+| `NO_SIGNAL_AFTER_SEC` | 1200 | `NO_SIGNAL` alert if on-duty guard stops uploading batches (15 min + 5 min grace) |
+| `LOCATION_BATCH_MAX` | 200 | max GPS points per `POST /location` batch |
+| `LOCATION_INTERVAL_SEC` | 900 | expected app upload cadence (informational) |
 | `ESCALATE_AFTER_SEC` | 300 | `STILL_OUTSIDE` alert |
 | `MAX_ACCURACY_M` | 100 | pings with worse GPS accuracy are ignored |
 | `LATE_GRACE_MIN` | 10 | minutes after shift start before "late" |
@@ -95,7 +97,7 @@ All routes except login need `Authorization: Bearer <token>`.
 ### Guard (`/api/guard`)
 - `GET /me`: profile, site, today's attendance
 - `POST /attendance/check-in`: **multipart**: `photo` (file), `lat`, `lng`, `accuracy`, optional `mocked`
-- `POST /location` `{lat, lng, accuracy, mocked?}`: returns `{zone, distanceMeters, warning?}`
+- `POST /location` single ping `{lat, lng, accuracy, mocked?}` **or** 15-min batch `{points: [{lat, lng, accuracy?, at?, mocked?}, ...]}` (`locations` also accepted; max 200 pts): returns `{zone, distanceMeters, warning?, processed?, saved?}`
 - `POST /attendance/check-out`: multipart: `lat`, `lng`, `accuracy`, optional `photo`
 - `GET /attendance`: own history; `POST /change-password`
 
