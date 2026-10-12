@@ -17,6 +17,7 @@ async function location(req, res) {
   const att = await monitor.openAttendance(g._id);
   if (!att) return res.status(409).json({ error: 'no active attendance; check in first' });
   const site = await monitor.siteOf(g);
+  console.log('site', site);
   if (!site) return res.status(409).json({ error: 'no site assigned to you; contact admin' });
 
   const batch = readBatch(req.body, cfg.LOCATION_BATCH_MAX);

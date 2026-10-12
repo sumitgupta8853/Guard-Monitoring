@@ -76,8 +76,21 @@ async function checkOut(req, res) {
   if (req.file && !checkImage(req.file.path)) return fail(400, 'invalid image');
   const c = readCoords(req.body);
   if (!c) return fail(400, 'valid lat and lng are required');
+  if (c.mocked) {
+    if (!att.fakeGpsAlerted) {
+      att.fakeGpsAlerted = true;
+      await att.save();
+      await notify.raiseAlert(g, 'FAKE_GPS', `${g.name} tried to check out with a mock/fake GPS location`, {
+        attendanceId: att._id,
+      });
+    }
+    return fail(403, 'mock locations are not allowed');
+  }
+  if (c.accuracy > cfg.MAX_ACCURACY_M)
+    return fail(422, `GPS accuracy is too low (${Math.round(c.accuracy)}m). Move to open sky and try again.`);
 
   const site = await monitor.siteOf(g);
+  if (!site) return fail(409, 'no site assigned to you; contact admin');
   const dist = distanceMeters(c.lat, c.lng, site.lat, site.lng);
   if (dist - c.accuracy > site.radiusMeters)
     return fail(403, `You are ${Math.round(dist)}m from "${site.name}". Return to the site to check out, or ask your admin.`,
