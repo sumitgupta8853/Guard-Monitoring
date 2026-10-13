@@ -6,6 +6,7 @@ const cfg = require('../config');
 const Location = require('../models/Location.model');
 const notify = require('./notify.service');
 const monitor = require('./monitor.service');
+const push = require('./push.service');
 const { distanceMeters } = require('../utils/geo');
 
 async function evaluate(guard, att, site, { lat, lng, accuracy }, atMs = null) {
@@ -57,6 +58,15 @@ async function evaluate(guard, att, site, { lat, lng, accuracy }, atMs = null) {
       notify.toGuard(guard._id || guard.id, 'warning', {
         message: `You left your assigned area. Return to "${site.name}" immediately.`, distanceMeters: d,
       });
+      // Background push so the guard's phone buzzes even with app killed.
+      if (cfg.PUSH_ENABLED) {
+        push.pushGuardWarning(
+          guard._id || guard.id,
+          'Return to your area',
+          `You left "${site.name}". Return immediately.`,
+          { type: 'LEFT_AREA', attendanceId: String(att._id || att.id || '') }
+        );
+      }
     }
     const v = monitor.currentViolation(att);
     if (v) {

@@ -1,5 +1,6 @@
 const cfg = require('../config');
 const Alert = require('../models/Alert.model');
+const push = require('./push.service');
 
 let io = null;
 const init = (instance) => {
@@ -30,6 +31,24 @@ async function raiseAlert(guard, type, message, extra = {}) {
   }
   toAdmins('alert', alert.toJSON());
   console.log(`[ALERT] ${type}: ${message}`);
+  // Background push (FCM) to all admin devices — fire-and-forget so a
+  // push failure never blocks the alert / socket / webhook flow.
+  if (cfg.PUSH_ENABLED) {
+    const gid = guard._id || guard.id;
+    push
+      .pushAlert({
+        title: type.replace(/_/g, ' '),
+        body: message,
+        data: {
+          type,
+          alertId: String(alert._id),
+          guardId: gid ? String(gid) : '',
+          attendanceId: extra.attendanceId ? String(extra.attendanceId) : '',
+        },
+        toAdmins: true,
+      })
+      .catch((e) => console.error('[PUSH] raiseAlert push failed:', e.message));
+  }
   if (cfg.WEBHOOK_URL) {
     fetch(cfg.WEBHOOK_URL, {
       method: 'POST',

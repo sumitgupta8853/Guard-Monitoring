@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "test": "node test.js"
+    "test": "node test.js",
+    "test:push": "node test-push.js"
   },
   "engines": {
     "node": ">=18"
@@ -15,6 +16,7 @@
     "bcryptjs": "^2.4.3",
     "dotenv": "^16.6.1",
     "express": "^4.19.2",
+    "firebase-admin": "^14.5.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.5.0",
     "multer": "^2.0.0",

@@ -22,6 +22,20 @@ const pointSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const hourlyPhotoSchema = new mongoose.Schema(
+  {
+    at: { type: String, required: true }, // ISO upload time
+    photo: { type: String, required: true }, // stored filename under uploads/attendance
+    lat: { type: Number, default: null },
+    lng: { type: Number, default: null },
+    accuracy: { type: Number, default: null },
+    distanceMeters: { type: Number, default: null },
+    slotIndex: { type: Number, required: true }, // 1-based: due at checkInAt + slotIndex * interval
+    overdue: { type: Boolean, default: false }, // uploaded after due+grace
+  },
+  { _id: true }
+);
+
 const attendanceSchema = new mongoose.Schema(
   {
     guardId: { type: mongoose.Schema.Types.ObjectId, ref: 'Guard', required: true, index: true },
@@ -53,6 +67,11 @@ const attendanceSchema = new mongoose.Schema(
     workedSeconds: { type: Number, default: 0 },
     insideSeconds: { type: Number, default: 0 },
     fakeGpsAlerted: { type: Boolean, default: false },
+    // Hourly proof-of-presence photos taken between check-in and check-out.
+    hourlyPhotos: { type: [hourlyPhotoSchema], default: [] },
+    lastHourlyPhotoAt: { type: String, default: null },
+    lastHourlyPhotoMs: { type: Number, default: null },
+    hourlyAlertSlot: { type: Number, default: 0 }, // highest slot already alerted as missed
   },
   { timestamps: true }
 );

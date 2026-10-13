@@ -9,7 +9,7 @@ const alertSchema = new mongoose.Schema(
     type: {
       type: String,
       required: true,
-      enum: ['LEFT_AREA', 'STILL_OUTSIDE', 'RETURNED', 'NO_SIGNAL', 'NOT_CHECKED_IN', 'FAKE_GPS'],
+      enum: ['LEFT_AREA', 'STILL_OUTSIDE', 'RETURNED', 'NO_SIGNAL', 'NOT_CHECKED_IN', 'FAKE_GPS', 'MISSING_HOURLY_PHOTO'],
       index: true,
     },
     message: { type: String, required: true },

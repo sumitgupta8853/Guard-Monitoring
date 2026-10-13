@@ -53,9 +53,12 @@ const at = (dLat) => ({ lat: C.lat + dLat, lng: C.lng, accuracy: 10 });
     const site = (await api('POST', '/api/admin/sites', { token: A, json: { name: 'Warehouse', ...C, radiusMeters: 100 } })).body;
     check('admin creates site', !!site.id);
 
-    const g1 = (await api('POST', '/api/admin/guards', { token: A, json: {
-      name: 'Ali Khan', username: 'ali', password: 'secret123', phone: '0300-1234567', cnic: '42101-1234567-1',
-      address: 'Karachi', emergencyContact: '0301-7654321', siteId: site.id, shift: { start: '00:00', end: '23:59' } } })).body;
+    const g1 = (await api('POST', '/api/admin/guards', {
+      token: A, json: {
+        name: 'Ali Khan', username: 'ali', password: 'secret123', phone: '0300-1234567', cnic: '42101-1234567-1',
+        address: 'Karachi', emergencyContact: '0301-7654321', siteId: site.id, shift: { start: '00:00', end: '23:59' }
+      }
+    })).body;
     check('admin creates guard profile', !!g1.id && g1.username === 'ali');
     check('duplicate username rejected', (await api('POST', '/api/admin/guards', { token: A, json: { name: 'X', username: 'ali', password: 'secret123', siteId: site.id } })).status === 409);
     const g2 = (await api('POST', '/api/admin/guards', { token: A, json: { name: 'Bilal', username: 'bilal', password: 'secret123', siteId: site.id } })).body;
@@ -89,6 +92,32 @@ const at = (dLat) => ({ lat: C.lat + dLat, lng: C.lng, accuracy: 10 });
     check('check-in with photo inside the area starts attendance', ci.status === 201 && !!ci.body.checkInPhotoUrl);
     const attId = ci.body.id;
     check('double check-in rejected', (await api('POST', '/api/guard/attendance/check-in', { token: G, form: photoForm(at(0)) })).status === 409);
+    check('guard sees strict hourly window message', typeof ci.body.hourly?.message === 'string' && ci.body.hourly.message.includes('slot time'));
+
+    // ----- hourly proof-of-presence photo (STRICT window) -----
+    // Deterministic unit checks of the window math (no waiting for top-of-hour):
+    const hw = await api('GET', '/api/guard/me', { token: G });
+    check('guard banner shows strict slot window', typeof hw.body.today?.hourly?.message === 'string' && hw.body.today.hourly.message.includes('slot time'));
+    // Bug 1: local fields must agree with the UTC ISO instants (same moment).
+    const hstat = hw.body.today?.hourly || {};
+    check('hourly local time matches UTC instant',
+      !!hstat.nextDueAt && !!hstat.nextDueAtLocal &&
+      Date.parse(hstat.nextDueAt) - Date.parse(ci.body.checkInAt) > 0 &&
+      /^\d{2}:\d{2}$/.test(hstat.nextDueAtLocal) && typeof hstat.tz === 'string');
+    const hpStrict = await api('POST', '/api/guard/attendance/hourly-photo', { token: G, form: photoForm(at(0.0002)) });
+    check('hourly photo outside window rejected with next window info',
+      (hpStrict.status === 201 || hpStrict.status === 425) &&
+      (hpStrict.status === 201 ? hpStrict.body.slotIndex >= 1 : (!!hpStrict.body.nextOpenAt && !!hpStrict.body.nextDueAtLocal)));
+    if (hpStrict.status === 201) {
+      check('duplicate hourly photo in same window rejected',
+        (await api('POST', '/api/guard/attendance/hourly-photo', { token: G, form: photoForm(at(0.0002)) })).status === 409);
+      // Bug 2: after upload inside an open window, nothing stays "uploadable".
+      const meAfter = await api('GET', '/api/guard/me', { token: G });
+      check('activeSlot clears after upload (uploadedActive set)',
+        meAfter.body.today?.hourly?.activeSlot === null &&
+        meAfter.body.today?.hourly?.activeWindow === null &&
+        meAfter.body.today?.hourly?.uploadedActive === true);
+    }
 
     // ----- geofence -----
     const p1 = await api('POST', '/api/guard/location', { token: G, json: at(0.0002) });
@@ -121,6 +150,7 @@ const at = (dLat) => ({ lat: C.lat + dLat, lng: C.lng, accuracy: 10 });
 
     const report = await api('GET', `/api/admin/attendance?guardId=${g1.id}`, { token: A });
     check('admin attendance report shows the record', report.body.length === 1 && report.body[0].id === attId && report.body[0].guardName === 'Ali Khan');
+    check('admin report carries strict hourly status', report.body[0].hourly?.strict === true && typeof report.body[0].hourly?.message === 'string');
     const trail = await api('GET', `/api/admin/attendance/${attId}/trail`, { token: A });
     check('admin can see the location trail', trail.body.length === 4);
     const dash = await api('GET', '/api/admin/dashboard', { token: A });

@@ -3,6 +3,7 @@ const Guard = require('../models/Guard.model');
 const Alert = require('../models/Alert.model');
 const Location = require('../models/Location.model');
 const monitor = require('../services/monitor.service');
+const hourly = require('../services/hourly.service');
 const { attView } = require('./admin.sites.controller');
 const { localDate } = require('../utils/date');
 
@@ -16,6 +17,8 @@ async function live(_req, res) {
       siteId: a.siteId.toString(), zone: a.zone, signal: a.signal,
       checkInAt: a.checkInAt, lastSeenAt: a.lastSeenAt,
       location: a.lastLocation, outsideSeconds: a.outsideSeconds,
+      hourly: hourly.hourlyStatus(a),
+      hourlyUploaded: (a.hourlyPhotos || []).length,
     });
   }
   res.json(out);

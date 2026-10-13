@@ -19,6 +19,7 @@ function createApp() {
   app.use('/api/auth', require('./routes/auth.routes'));
   app.use('/api/admin', require('./routes/admin.routes'));
   app.use('/api/guard', require('./routes/guard.routes'));
+  app.use('/api/push', require('./routes/push.routes'));
   app.use('/api/files', require('./routes/files.routes'));
   app.get('/health', (_req, res) => res.json({ ok: true }));
 

@@ -20,6 +20,11 @@ router.post(
   uploader('attendance').single('photo'),
   asyncHandler(attendance.checkOut)
 );
+router.post(
+  '/attendance/hourly-photo',
+  uploader('attendance').single('photo'),
+  asyncHandler(attendance.hourlyPhoto)
+);
 router.post('/location', asyncHandler(loc.location));
 router.get('/attendance', asyncHandler(profile.history));
 

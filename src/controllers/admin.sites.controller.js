@@ -7,6 +7,7 @@ const Attendance = require('../models/Attendance.model');
 const Alert = require('../models/Alert.model');
 const Location = require('../models/Location.model');
 const monitor = require('../services/monitor.service');
+const hourly = require('../services/hourly.service');
 const { uploader, checkImage, removeFile } = require('../uploads/uploader');
 const { UPLOADS } = require('../uploads/folders');
 const { fileUrl } = require('../utils/fileUrl');
@@ -16,11 +17,16 @@ const { toMinutes, localDate } = require('../utils/date');
 const guardView = (g) => ({ ...g.toJSON(), profilePhotoUrl: fileUrl('profiles', g.profilePhoto) });
 const attView = (a) => {
   const j = a.toJSON ? a.toJSON() : a;
-  return {
+  const base = {
     ...j,
     checkInPhotoUrl: fileUrl('attendance', j.checkInPhoto),
     checkOutPhotoUrl: fileUrl('attendance', j.checkOutPhoto),
   };
+  try {
+    return hourly.withHourlyPhotos(base);
+  } catch {
+    return base;
+  }
 };
 
 function validShift(shift) {

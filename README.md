@@ -26,7 +26,8 @@ scripts/migrate-json-to-mongo.js   # one-shot import from old ./data/db.json
 1. **Admin** logs in, creates a **site** (center point + radius) and **guard profiles** (name, phone, CNIC, address, emergency contact, shift, profile photo, login).
 2. **Guard** logs in and sees their own profile and assigned site.
 3. **Attendance starts only when the guard sends a live photo and a GPS position inside the radius.** Outside the radius, check-in is refused.
-4. While on duty the guard's app records GPS every ~20 s locally and uploads the buffered array every 15 min (`POST /api/guard/location` with `{points: [...]}`). Points replay oldest-first; if any leave the radius:
+4. While on duty the guard **must upload a live photo every hour inside a STRICT slot window** (`POST /api/guard/attendance/hourly-photo` multipart: `photo` + `lat,lng,accuracy`). Slots are wall-clock top-of-hour strictly after check-in (check-in 10:13 → slot 1 due 11:00). The N:00 photo is accepted ONLY inside [N:00−5min, N:00+5min] (e.g. 10:55–11:05; tunable via `HOURLY_EARLY_MIN`/`HOURLY_LATE_MIN`) — uploads outside the window are rejected `425` with `nextOpenAt`, duplicates `409`. A closed window with no photo is a permanent miss (`MISSING_HOURLY_PHOTO` alert, `missed` counter). Every accepted photo is marked on that day's attendance (`hourlyPhotos[]` + `hourly.activeSlot/activeWindow` status); the guard app must enable the camera button only when `hourly.activeSlot != null` and show `hourly.message`. Checkout stays allowed (never blocked by misses; compliance shows as `uploaded/expected`).
+5. While on duty the guard's app records GPS every ~20 s locally and uploads the buffered array every 15 min (`POST /api/guard/location` with `{points: [...]}`). Points replay oldest-first; if any leave the radius:
    - a `LEFT_AREA` alert goes to the admin (Socket.IO, plus optional webhook) when the batch arrives — up to ~15 min after the guard actually left
    - the guard gets a live `warning` and every batch response says "return immediately"
    - the time spent outside is recorded on that day's attendance as a violation
@@ -73,7 +74,11 @@ node scripts/migrate-json-to-mongo.js ./data
 | `ESCALATE_AFTER_SEC` | 300 | `STILL_OUTSIDE` alert |
 | `MAX_ACCURACY_M` | 100 | pings with worse GPS accuracy are ignored |
 | `LATE_GRACE_MIN` | 10 | minutes after shift start before "late" |
+| `HOURLY_EARLY_MIN` | 5 | mins before top-of-hour the slot window opens (11:00 photo from 10:55) |
+| `HOURLY_LATE_MIN` | 5 | mins after top-of-hour the window closes (11:00 photo until 11:05; uploads outside rejected) |
 | `CORS_ORIGIN` | * | set to your admin web app's URL |
+| `PUSH_ENABLED` | true | set false to disable FCM push (Socket.IO still works) |
+| `FCM_PROJECT_ID`, `FCM_CLIENT_EMAIL`, `FCM_PRIVATE_KEY` | none | from Firebase Console -> Project Settings -> Service Accounts; if empty, push is disabled but API still works |
 
 ## API
 
@@ -81,6 +86,15 @@ All routes except login need `Authorization: Bearer <token>`.
 
 ### Auth
 - `POST /api/auth/login` `{username, password}` -> `{token, role}` (same endpoint for admin and guards)
+
+### Push notifications (FCM) (`/api/push` + `/api/admin/push`)
+- `POST /api/push/token` `{token, platform: "android"|"ios"|"web", deviceId?, appVersion?}` — register/refresh this device (guard AND admin, role from JWT). Re-POST on FCM token refresh.
+- `DELETE /api/push/token` `{token}` or `{deviceId}` — remove on logout.
+- `GET /api/push/status` — `{pushEnabled, devices, platforms}` for current user.
+- `POST /api/admin/push/test` `{title?, body?, guardId?}` — test push to self (or one guard).
+- `POST /api/admin/push/send` `{title, body, guardIds?}` — announcement to listed guards (or all admins if no guardIds).
+- Automatic: every `raiseAlert` also FCM-pushes to all admin devices; `LEFT_AREA` + `MISSING_HOURLY_PHOTO` also push to the guard. Fire-and-forget — push never blocks alerts/sockets.
+- Without `FCM_*` keys the API still works and reports `pushEnabled: false`; mobile integration: get FCM token (`@react-native-firebase/messaging` / `expo-notifications`) -> `POST /api/push/token` after login.
 
 ### Admin (`/api/admin`)
 - Sites: `POST/GET /sites`, `PUT/DELETE /sites/:id`. Body: `{name, lat, lng, radiusMeters, address?}`
@@ -97,6 +111,7 @@ All routes except login need `Authorization: Bearer <token>`.
 ### Guard (`/api/guard`)
 - `GET /me`: profile, site, today's attendance
 - `POST /attendance/check-in`: **multipart**: `photo` (file), `lat`, `lng`, `accuracy`, optional `mocked`
+- `POST /attendance/hourly-photo`: **STRICT** hourly proof-of-presence: `photo` + `lat`, `lng`, `accuracy` (same geofence/fake-GPS rules as check-in). Accepted ONLY inside the slot window [due−early, due+late] (425 outside window with `nextOpenAt` + `nextDueAtLocal/nextWindowLabel`, 409 duplicate). Response: `{ok, slotIndex, overdue, hourly:{activeSlot, activeWindow, uploadedActive, currentSlot, nextOpenAt(+Local), nextDueAt(+Local), nextCloseAt(+Local), nextWindowLabel, tz, uploaded, expected, missed, message}, attendance}` — guard app must show `hourly.message` / `*Local` fields (ISO is UTC; never render raw ISO) and enable camera only when `activeSlot != null` (null after upload → show ✅ received state).
 - `POST /location` single ping `{lat, lng, accuracy, mocked?}` **or** 15-min batch `{points: [{lat, lng, accuracy?, at?, mocked?}, ...]}` (`locations` also accepted; max 200 pts): returns `{zone, distanceMeters, warning?, processed?, saved?}`
 - `POST /attendance/check-out`: multipart: `lat`, `lng`, `accuracy`, optional `photo`
 - `GET /attendance`: own history; `POST /change-password`
@@ -109,7 +124,7 @@ Connect with `auth: { token }`.
 - Admin receives: `alert`, `guard:update`, `attendance:start`, `attendance:end`
 - Guard receives: `warning`
 
-Alert types: `LEFT_AREA`, `STILL_OUTSIDE`, `RETURNED`, `NO_SIGNAL`, `NOT_CHECKED_IN`, `FAKE_GPS`.
+Alert types: `LEFT_AREA`, `STILL_OUTSIDE`, `RETURNED`, `NO_SIGNAL`, `NOT_CHECKED_IN`, `FAKE_GPS`, `MISSING_HOURLY_PHOTO`.
 
 ## What the backend can and cannot enforce
 

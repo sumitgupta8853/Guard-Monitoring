@@ -4,6 +4,7 @@ const { asyncHandler } = require('../utils/asyncHandler');
 const sites = require('../controllers/admin.sites.controller');
 const guards = require('../controllers/admin.guards.controller');
 const reports = require('../controllers/admin.reports.controller');
+const pushAdmin = require('../controllers/admin.push.controller');
 
 router.use(requireAuth('admin'));
 
@@ -34,6 +35,10 @@ router.get('/attendance', asyncHandler(reports.listAttendance));
 router.get('/attendance/:id', asyncHandler(reports.getAttendance));
 router.get('/attendance/:id/trail', asyncHandler(reports.trail));
 router.post('/attendance/:id/close', asyncHandler(reports.closeAttendance));
+
+// ---------- push (FCM) ----------
+router.post('/push/test', asyncHandler(pushAdmin.testPush));
+router.post('/push/send', asyncHandler(pushAdmin.broadcast));
 
 // ---------- alerts ----------
 router.get('/alerts', asyncHandler(reports.listAlerts));

@@ -1,16 +1,22 @@
 const bcrypt = require('bcryptjs');
 const Attendance = require('../models/Attendance.model');
 const monitor = require('../services/monitor.service');
+const hourly = require('../services/hourly.service');
 const { fileUrl } = require('../utils/fileUrl');
 const { localDate } = require('../utils/date');
 
 const attView = (a) => {
   const j = a.toJSON ? a.toJSON() : a;
-  return {
+  const base = {
     ...j,
     checkInPhotoUrl: fileUrl('attendance', j.checkInPhoto),
     checkOutPhotoUrl: fileUrl('attendance', j.checkOutPhoto),
   };
+  try {
+    return hourly.withHourlyPhotos(base);
+  } catch {
+    return base; // never break attendance views if hourly calc fails
+  }
 };
 
 async function me(req, res) {

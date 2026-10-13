@@ -2,6 +2,7 @@ const Attendance = require('../models/Attendance.model');
 const monitor = require('../services/monitor.service');
 const notify = require('../services/notify.service');
 const cfg = require('../config');
+const hourly = require('../services/hourly.service');
 const { readCoords } = require('../utils/coords');
 const { distanceMeters } = require('../utils/geo');
 const { localDate, toMinutes } = require('../utils/date');
@@ -107,4 +108,109 @@ async function checkOut(req, res) {
   res.json(attView(att));
 }
 
-module.exports = { checkIn, checkOut };
+// ---------- hourly proof-of-presence photo (STRICT window) ----------
+// Guard must upload a live photo every hour between check-in and check-out.
+// Wall-clock slots: the 11:00 photo is accepted ONLY inside [10:55, 11:05]
+// (HOURLY_EARLY_MIN / HOURLY_LATE_MIN). Not before, not after — a closed
+// window with no photo is a permanent miss. multipart: photo, lat, lng,
+// accuracy, optional mocked. Same geofence rule as check-in.
+async function hourlyPhoto(req, res) {
+  const fail = (code, error, extra = {}) => {
+    removeFile(req.file && req.file.path);
+    return res.status(code).json({ error, ...extra });
+  };
+  const g = req.guard;
+  const att = await monitor.openAttendance(g._id);
+  if (!att) return fail(409, 'you are not checked in');
+  if (!req.file) return fail(400, 'a live photo is required (field name: photo)');
+  const { checkImage } = require('../uploads/uploader');
+  if (!checkImage(req.file.path)) return fail(400, 'invalid image');
+
+  // STRICT gate first: is any slot window open right now?
+  const now = new Date();
+  const slot = hourly.activeSlot(att, now.getTime());
+  if (slot == null) {
+    const upcoming = hourly.nextOpenSlot(att, now.getTime());
+    const w = hourly.windowOf(att, upcoming);
+    const iso = (ms) => new Date(ms).toISOString();
+    const localT = (ms) => new Date(ms).toLocaleTimeString('en-IN', {
+      hour: '2-digit', minute: '2-digit', hour12: false,
+      timeZone: process.env.TZ || 'Asia/Kolkata',
+    });
+    return fail(425, 'photo window is closed — upload only within the slot time (not before, not after)',
+      {
+        activeSlot: null,
+        nextSlot: upcoming,
+        nextOpenAt: iso(w.openAt),
+        nextDueAt: iso(w.dueAt),
+        nextCloseAt: iso(w.closeAt),
+        nextOpenAtLocal: localT(w.openAt),
+        nextDueAtLocal: localT(w.dueAt),
+        nextCloseAtLocal: localT(w.closeAt),
+        nextWindowLabel: `${localT(w.openAt)}–${localT(w.closeAt)}`,
+        tz: process.env.TZ || 'Asia/Kolkata',
+        hourly: hourly.hourlyStatus(att, now.getTime()),
+      });
+  }
+  const done = hourly.uploadedSlots(att);
+  if (done.has(slot)) {
+    const w = hourly.windowOf(att, slot);
+    return fail(409, `hourly photo #${slot} already uploaded`, {
+      slotIndex: slot,
+      nextOpenAt: new Date(hourly.windowOf(att, slot + 1).openAt).toISOString(),
+      windowCloseAt: new Date(w.closeAt).toISOString(),
+    });
+  }
+
+  const c = readCoords(req.body);
+  if (!c) return fail(400, 'valid lat and lng are required');
+  if (c.mocked) {
+    if (!att.fakeGpsAlerted) {
+      att.fakeGpsAlerted = true;
+      await att.save();
+      await notify.raiseAlert(g, 'FAKE_GPS', `${g.name} tried hourly photo with a mock/fake GPS location`, {
+        attendanceId: att._id,
+      });
+    }
+    return fail(403, 'mock locations are not allowed');
+  }
+  if (c.accuracy > cfg.MAX_ACCURACY_M)
+    return fail(422, `GPS accuracy is too low (${Math.round(c.accuracy)}m). Move to open sky and try again.`);
+
+  const site = await monitor.siteOf(g);
+  if (!site) return fail(409, 'no site assigned to you; contact admin');
+  const dist = distanceMeters(c.lat, c.lng, site.lat, site.lng);
+  if (dist > site.radiusMeters)
+    return fail(403, `You are ${Math.round(dist)}m from "${site.name}". Return inside ${site.radiusMeters}m to upload your hourly photo.`,
+      { distanceMeters: Math.round(dist), radiusMeters: site.radiusMeters });
+
+  const w = hourly.windowOf(att, slot);
+  const overdue = now.getTime() > w.dueAt; // uploaded in (due, close]: accepted but late
+  att.hourlyPhotos.push({
+    at: now.toISOString(),
+    photo: req.file.filename,
+    lat: c.lat, lng: c.lng, accuracy: c.accuracy,
+    distanceMeters: Math.round(dist),
+    slotIndex: slot,
+    overdue,
+  });
+  att.lastHourlyPhotoAt = now.toISOString();
+  att.lastHourlyPhotoMs = now.getTime();
+  await att.save();
+  notify.toAdmins('guard:update', {
+    guardId: g._id, name: g.name, attendanceId: att._id,
+    hourlyPhoto: slot, photoAt: att.lastHourlyPhotoAt,
+  });
+  const status = hourly.hourlyStatus(att);
+  notify.toGuard(g._id, 'hourly', {
+    message: overdue
+      ? `Hourly photo #${slot} received (late). ${status.message}`
+      : `Hourly photo #${slot} received. ${status.message}`,
+    slotIndex: slot,
+    overdue,
+    hourly: status,
+  });
+  res.status(201).json({ ok: true, slotIndex: slot, overdue, hourly: status, attendance: attView(att) });
+}
+
+module.exports = { checkIn, checkOut, hourlyPhoto };
