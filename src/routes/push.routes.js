@@ -8,5 +8,6 @@ const push = require('../controllers/push.controller');
 router.post('/token', requireAuth(), asyncHandler(push.register));
 router.delete('/token', requireAuth(), asyncHandler(push.remove));
 router.get('/status', requireAuth(), asyncHandler(push.status));
+router.post('/test', requireAuth(), asyncHandler(push.test));
 
 module.exports = router;

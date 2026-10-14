@@ -2,8 +2,9 @@ const bcrypt = require('bcryptjs');
 const Attendance = require('../models/Attendance.model');
 const monitor = require('../services/monitor.service');
 const hourly = require('../services/hourly.service');
+const cfg = require('../config');
 const { fileUrl } = require('../utils/fileUrl');
-const { localDate } = require('../utils/date');
+const { localDate, shiftStatus, fmtMinutes } = require('../utils/date');
 
 const attView = (a) => {
   const j = a.toJSON ? a.toJSON() : a;
@@ -25,6 +26,24 @@ async function me(req, res) {
   const open = await monitor.openAttendance(g._id);
   const todays =
     open || (await Attendance.findOne({ guardId: g._id, date: localDate() }).sort({ checkInAt: -1 }));
+  // Shift window for the app: enable check-in / check-out / camera buttons
+  // only when shiftNow.ok. Uses the same gate as the attendance controller.
+  const tz = process.env.TZ || 'Asia/Kolkata';
+  const st = shiftStatus(
+    g.shift, new Date(),
+    { earlyAllowMin: cfg.SHIFT_CHECKIN_EARLY_MIN, endGraceMin: cfg.SHIFT_END_GRACE_MIN }
+  );
+  const shiftNow = {
+    ok: st.ok,
+    reason: st.reason, // null | SHIFT_NOT_STARTED | SHIFT_ENDED
+    start: (g.shift && g.shift.start) || null,
+    end: (g.shift && g.shift.end) || null,
+    windowLocal: st.noShift ? null : `${fmtMinutes(st.earlyOpen)}–${fmtMinutes(st.hardClose)}`,
+    tz,
+    canCheckIn: st.ok && !open && !todays,
+    canCheckOut: st.ok && !!open,
+    canUploadHourly: st.ok && !!open,
+  };
   res.json({
     profile: { ...g.toJSON(), profilePhotoUrl: fileUrl('profiles', g.profilePhoto) },
     site: site && {
@@ -32,6 +51,8 @@ async function me(req, res) {
       radiusMeters: site.radiusMeters,
     },
     onDuty: !!open,
+    shift: { start: (g.shift && g.shift.start) || null, end: (g.shift && g.shift.end) || null },
+    shiftNow,
     today: todays ? attView(todays) : null,
   });
 }

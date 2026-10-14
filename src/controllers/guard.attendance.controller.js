@@ -5,9 +5,44 @@ const cfg = require('../config');
 const hourly = require('../services/hourly.service');
 const { readCoords } = require('../utils/coords');
 const { distanceMeters } = require('../utils/geo');
-const { localDate, toMinutes } = require('../utils/date');
+const { localDate, toMinutes, shiftStatus, fmtMinutes } = require('../utils/date');
 const { removeFile } = require('../uploads/uploader');
 const { attView } = require('./guard.profile.controller');
+
+// Guards may act ONLY inside [shift.start - EARLY, shift.end + END_GRACE].
+// Returns null when inside shift, otherwise a { code, error, extra } to reject with.
+function shiftGate(g, now = new Date()) {
+  const st = shiftStatus(
+    g.shift,
+    now,
+    { earlyAllowMin: cfg.SHIFT_CHECKIN_EARLY_MIN, endGraceMin: cfg.SHIFT_END_GRACE_MIN }
+  );
+  if (st.ok) return null;
+  const tz = process.env.TZ || 'Asia/Kolkata';
+  const localT = (d) => new Date(d).toLocaleTimeString('en-IN', {
+    hour: '2-digit', minute: '2-digit', hour12: false, timeZone: tz,
+  });
+  const base = {
+    reason: st.reason,
+    shiftStart: (g.shift && g.shift.start) || null,
+    shiftEnd: (g.shift && g.shift.end) || null,
+    shiftWindowLocal: `${fmtMinutes(st.earlyOpen)}–${fmtMinutes(st.hardClose)}`,
+    nowLocal: localT(now),
+    tz,
+  };
+  if (st.reason === 'SHIFT_NOT_STARTED') {
+    return {
+      code: 403,
+      error: `Your shift starts at ${base.shiftStart} — check-in opens at ${fmtMinutes(st.earlyOpen)}. Please wait.`,
+      extra: base,
+    };
+  }
+  return {
+    code: 403,
+    error: `Your shift ended at ${base.shiftEnd} — attendance is closed. Contact admin if you need overtime.`,
+    extra: base,
+  };
+}
 
 async function checkIn(req, res) {
   const fail = (code, error, extra = {}) => {
@@ -31,6 +66,10 @@ async function checkIn(req, res) {
   const today = localDate();
   if (await Attendance.exists({ guardId: g._id, date: today }))
     return fail(409, 'your attendance for today is already completed');
+  // SHIFT gate: check-in only within [start - EARLY, end + GRACE].
+  const now = new Date();
+  const gate = shiftGate(g, now);
+  if (gate) return fail(gate.code, gate.error, gate.extra);
   if (c.accuracy > cfg.MAX_ACCURACY_M)
     return fail(422, `GPS accuracy is too low (${Math.round(c.accuracy)}m). Move to open sky and try again.`);
 
@@ -39,7 +78,6 @@ async function checkIn(req, res) {
     return fail(403, `You are ${Math.round(dist)}m from "${site.name}". You must be within ${site.radiusMeters}m to start attendance.`,
       { distanceMeters: Math.round(dist), radiusMeters: site.radiusMeters });
 
-  const now = new Date();
   let late = false;
   let lateMinutes = 0;
   const start = g.shift && toMinutes(g.shift.start);
@@ -73,6 +111,12 @@ async function checkOut(req, res) {
   const g = req.guard;
   const att = await monitor.openAttendance(g._id);
   if (!att) return fail(409, 'you are not checked in');
+  // SHIFT gate: check-out only within [start - EARLY, end + GRACE].
+  // After the grace window the server auto-closes (watchdog), so a 403
+  // here means "shift over — ask admin / already auto-closed".
+  const nowOut = new Date();
+  const gateOut = shiftGate(g, nowOut);
+  if (gateOut) return fail(gateOut.code, gateOut.error, gateOut.extra);
   const { checkImage } = require('../uploads/uploader');
   if (req.file && !checkImage(req.file.path)) return fail(400, 'invalid image');
   const c = readCoords(req.body);
@@ -128,6 +172,9 @@ async function hourlyPhoto(req, res) {
 
   // STRICT gate first: is any slot window open right now?
   const now = new Date();
+  // SHIFT gate: hourly photos only within [start - EARLY, end + GRACE].
+  const gateHourly = shiftGate(g, now);
+  if (gateHourly) return fail(gateHourly.code, gateHourly.error, gateHourly.extra);
   const slot = hourly.activeSlot(att, now.getTime());
   if (slot == null) {
     const upcoming = hourly.nextOpenSlot(att, now.getTime());

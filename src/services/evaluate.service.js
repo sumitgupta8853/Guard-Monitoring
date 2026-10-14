@@ -59,7 +59,7 @@ async function evaluate(guard, att, site, { lat, lng, accuracy }, atMs = null) {
         message: `You left your assigned area. Return to "${site.name}" immediately.`, distanceMeters: d,
       });
       // Background push so the guard's phone buzzes even with app killed.
-      if (cfg.PUSH_ENABLED) {
+      if (push.enabled()) {
         push.pushGuardWarning(
           guard._id || guard.id,
           'Return to your area',

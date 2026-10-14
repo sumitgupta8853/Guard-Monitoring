@@ -30,16 +30,16 @@ async function raiseAlert(guard, type, message, extra = {}) {
     await Alert.deleteMany({ _id: { $in: old.map((a) => a._id) } });
   }
 
-  //check//
   toAdmins('alert', alert.toJSON());
   console.log(`[ALERT] ${type}: ${message}`);
+
   // Background push (FCM) to all admin devices — fire-and-forget so a
   // push failure never blocks the alert / socket / webhook flow.
-  if (cfg.PUSH_ENABLED) {
+  if (push.enabled()) {
     const gid = guard._id || guard.id;
     push
       .pushAlert({
-        title: type.replace(/_/g, ' '),
+        title: `${type.replace(/_/g, ' ')} — ${guard.name}`,
         body: message,
         data: {
           type,
@@ -51,6 +51,7 @@ async function raiseAlert(guard, type, message, extra = {}) {
       })
       .catch((e) => console.error('[PUSH] raiseAlert push failed:', e.message));
   }
+
   if (cfg.WEBHOOK_URL) {
     fetch(cfg.WEBHOOK_URL, {
       method: 'POST',

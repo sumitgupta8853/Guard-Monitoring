@@ -6,7 +6,7 @@ const cfg = require('../config');
 const DeviceToken = require('../models/DeviceToken.model');
 const User = require('../models/User.model');
 
-let admin = null;
+let fbApp = null;
 let initError = null;
 let loggedState = false;
 
@@ -22,33 +22,36 @@ function messaging() {
     }
     return null;
   }
-  if (admin) return admin.messaging();
   try {
-    const fa = require('firebase-admin');
-    const privateKey = String(cfg.FCM_PRIVATE_KEY).replace(/\\n/g, '\n');
-    if (!fa.apps.length) {
-      fa.initializeApp({
-        credential: fa.credential.cert({
-          projectId: cfg.FCM_PROJECT_ID,
-          clientEmail: cfg.FCM_CLIENT_EMAIL,
-          privateKey,
-        }),
-      });
+    const { initializeApp, getApps, cert } = require('firebase-admin/app');
+    const { getMessaging } = require('firebase-admin/messaging');
+    if (!fbApp) {
+      const privateKey = String(cfg.FCM_PRIVATE_KEY).replace(/\\n/g, '\n');
+      fbApp = getApps().length
+        ? getApps()[0]
+        : initializeApp({
+          credential: cert({
+            projectId: cfg.FCM_PROJECT_ID,
+            clientEmail: cfg.FCM_CLIENT_EMAIL,
+            privateKey,
+          }),
+        });
+      if (!loggedState) {
+        loggedState = true;
+        console.log(`[PUSH] enabled for Firebase project "${cfg.FCM_PROJECT_ID}"`);
+      }
     }
-    admin = fa;
-    if (!loggedState) {
-      loggedState = true;
-      console.log(`[PUSH] enabled for Firebase project "${cfg.FCM_PROJECT_ID}"`);
-    }
-    return admin.messaging();
+    return getMessaging(fbApp);
   } catch (e) {
     if (!initError || initError !== e.message) {
       initError = e.message;
       console.error('[PUSH] init failed:', e.message);
+
     }
     return null;
   }
 }
+
 
 function enabled() {
   return isConfigured();
@@ -66,6 +69,13 @@ async function registerToken(user, guard, { token, platform, deviceId, appVersio
     err.status = 400;
     throw err;
   }
+
+  // fallback: find the guard record if the middleware didn't attach it
+  if (!guard && user.role === 'guard') {
+    const Guard = require('../models/Guard.model');
+    guard = await Guard.findOne({ userId: user._id || user.id });
+  }
+
   const now = new Date().toISOString();
   const base = {
     userId: user._id || user.id,
@@ -76,15 +86,18 @@ async function registerToken(user, guard, { token, platform, deviceId, appVersio
     appVersion: appVersion || null,
     lastRegisteredAt: now,
   };
+
   if (deviceId) {
+    // free this token from any other row first (unique index on token)
+    await DeviceToken.deleteMany({ token, $nor: [{ userId: base.userId, deviceId }] });
     const row = await DeviceToken.findOneAndUpdate(
       { userId: base.userId, deviceId },
       { $set: { ...base, token } },
       { new: true, upsert: true }
     );
-    await DeviceToken.deleteMany({ token, _id: { $ne: row._id } });
     return row.toJSON();
   }
+
   const row = await DeviceToken.findOneAndUpdate(
     { token },
     { $set: base },
@@ -131,9 +144,8 @@ async function deleteTokens(tokens) {
 function invalidTokenError(e) {
   const code = (e && (e.code || (e.errorInfo && e.errorInfo.code))) || '';
   return (
-    code.includes('invalid-registration-token') ||
     code.includes('registration-token-not-registered') ||
-    code.includes('invalid-argument')
+    code.includes('invalid-registration-token')
   );
 }
 
@@ -151,13 +163,20 @@ async function sendMulticast(tokens, { title, body, data }) {
         tokens: batch,
         notification: { title: title || 'Guard Monitor', body: body || '' },
         data: Object.fromEntries(Object.entries(data || {}).map(([k, v]) => [k, String(v == null ? '' : v)])),
-        android: { priority: 'high', notification: { sound: 'default' } },
+        android: {
+          priority: 'high',
+          ttl: 3600 * 1000,
+          notification: { sound: 'default', channelId: 'alerts' },
+        },
         apns: { payload: { aps: { sound: 'default', badge: 1 } } },
       });
       sent += resp.successCount;
       failed += resp.failureCount;
       resp.responses.forEach((r, idx) => {
-        if (!r.success && r.error && invalidTokenError(r.error)) stale.push(batch[idx]);
+        if (!r.success && r.error) {
+          console.error('[PUSH] token failed:', r.error.code, '-', r.error.message);
+          if (invalidTokenError(r.error)) stale.push(batch[idx]);
+        }
       });
     } catch (e) {
       failed += batch.length;
@@ -165,7 +184,7 @@ async function sendMulticast(tokens, { title, body, data }) {
     }
   }
   if (stale.length) {
-    await deleteTokens(stale).catch(() => {});
+    await deleteTokens(stale).catch(() => { });
     console.log(`[PUSH] removed ${stale.length} stale device token(s)`);
   }
   return { ok: true, sent, failed };
@@ -216,4 +235,3 @@ module.exports = {
   pushAlert,
   pushGuardWarning,
 };
-

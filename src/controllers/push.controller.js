@@ -16,8 +16,11 @@ async function register(req, res) {
 
 // DELETE /api/push/token — remove token on logout.
 async function remove(req, res) {
-  const { token, deviceId } = req.body || {};
-  const out = await push.removeToken(req.user, { token, deviceId });
+  const src = { ...(req.query || {}), ...(req.body || {}) };
+  const out = await push.removeToken(req.user, {
+    token: src.token,
+    deviceId: src.deviceId,
+  });
   res.json(out);
 }
 
@@ -32,4 +35,14 @@ async function status(req, res) {
   });
 }
 
-module.exports = { register, remove, status };
+// POST /api/push/test — send a test push to this user's devices.
+async function test(req, res) {
+  const out = await push.sendToUser(req.user._id || req.user.id, {
+    title: 'Test notification',
+    body: 'Push is working',
+    data: { type: 'TEST' },
+  });
+  res.json(out);
+}
+
+module.exports = { register, remove, status, test };

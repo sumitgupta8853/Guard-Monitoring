@@ -9,7 +9,7 @@ const notify = require('./notify.service');
 const push = require('./push.service');
 const hourly = require('./hourly.service');
 const { distanceMeters } = require('../utils/geo');
-const { localDate, toMinutes } = require('../utils/date');
+const { localDate, toMinutes, shiftStatus } = require('../utils/date');
 
 const openAttendance = (guardId) =>
   Attendance.findOne({ guardId, checkOutAt: null });
@@ -59,6 +59,32 @@ async function tick() {
         { attendanceId: att._id });
     }
   }
+
+  // Hourly photo reminder: push the guard once when a slot's window OPENS.
+  for (const att of open) {
+    try {
+      const done = hourly.uploadedSlots(att);
+      let dirty = false;
+      for (let s = (att.hourlyOpenNotifiedSlot || 0) + 1; ; s += 1) {
+        const w = hourly.windowOf(att, s);
+        if (nowMs < w.openAt) break; // window not open yet: wait
+        if (nowMs < w.closeAt && !done.has(s) && push.enabled()) {
+          push.pushGuardWarning(
+            att.guardId,
+            'Photo window is open',
+            `Upload hourly photo #${s} now (${hourly.fmtLocalT(w.openAt)}–${hourly.fmtLocalT(w.closeAt)}).`,
+            { type: 'HOURLY_WINDOW_OPEN', attendanceId: String(att._id || ''), slot: String(s) }
+          );
+        }
+        att.hourlyOpenNotifiedSlot = s; // mark as handled, even if already closed
+        dirty = true;
+        if (s > 1000) break;
+      }
+      if (dirty) await att.save();
+    } catch (e) {
+      console.error('[watchdog:hourly-open]', e.message);
+    }
+  }
   // Hourly photo watch (STRICT): one MISSING_HOURLY_PHOTO alert per slot whose
   // window CLOSED with no photo. Permanent miss — watchdog only advances.
   for (const att of open) {
@@ -79,7 +105,7 @@ async function tick() {
             message: `Hourly photo #${s} MISSED (window closed). Next window ${hourly.fmtLocalT(nw.openAt)}–${hourly.fmtLocalT(nw.closeAt)} — upload only within the slot time.`,
             hourly: hourly.hourlyStatus(att, nowMs),
           });
-          if (cfg.PUSH_ENABLED) {
+          if (push.enabled()) {
             push.pushGuardWarning(
               att.guardId,
               'Hourly photo missed',
@@ -113,6 +139,33 @@ async function tick() {
     await g.save();
     await notify.raiseAlert(g, 'NOT_CHECKED_IN',
       `${g.name} has not checked in (shift started at ${g.shift.start})`);
+  }
+
+  // Shift-end auto-close: close any open attendance whose shift ended more
+  // than SHIFT_AUTO_CLOSE_AFTER_MIN ago (covers day + overnight shifts).
+  // Hourly photos / check-out after the shift window are already rejected
+  // by the controller gates; this prevents stale "on duty" rows.
+  try {
+    const stillOpen = await Attendance.find({ checkOutAt: null });
+    for (const att of stillOpen) {
+      const guard = await Guard.findById(att.guardId);
+      if (!guard || !guard.shift || toMinutes(guard.shift.start) == null) continue;
+      const st = shiftStatus(
+        guard.shift, d,
+        { earlyAllowMin: cfg.SHIFT_CHECKIN_EARLY_MIN, endGraceMin: cfg.SHIFT_AUTO_CLOSE_AFTER_MIN }
+      );
+      if (st.ok || st.reason !== 'SHIFT_ENDED' || st.noShift) continue;
+      await closeAttendance(att, { by: 'system (shift ended)', photo: null, location: null });
+      await notify.raiseAlert(guard, 'SHIFT_AUTO_CLOSE',
+        `${guard.name} was auto checked-out — shift ended at ${guard.shift.end}`,
+        { attendanceId: att._id });
+      notify.toAdmins('attendance:end', {
+        attendanceId: att.id, guardId: guard.id, name: guard.name,
+        checkOutAt: att.checkOutAt, autoClosed: true,
+      });
+    }
+  } catch (e) {
+    console.error('[watchdog:shift-auto-close]', e.message);
   }
 }
 

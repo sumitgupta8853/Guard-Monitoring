@@ -71,7 +71,8 @@ const attendanceSchema = new mongoose.Schema(
     hourlyPhotos: { type: [hourlyPhotoSchema], default: [] },
     lastHourlyPhotoAt: { type: String, default: null },
     lastHourlyPhotoMs: { type: Number, default: null },
-    hourlyAlertSlot: { type: Number, default: 0 }, // highest slot already alerted as missed
+    hourlyAlertSlot: { type: Number, default: 0 },
+    hourlyOpenNotifiedSlot: { type: Number, default: 0 }, // highest slot already alerted as missed
   },
   { timestamps: true }
 );

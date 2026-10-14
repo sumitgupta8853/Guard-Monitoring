@@ -38,6 +38,13 @@ const cfg = {
   // e.g. 10:55-11:05 for the 11:00 photo. Not before, not after.
   HOURLY_EARLY_MIN: Number(process.env.HOURLY_EARLY_MIN ?? 5),
   HOURLY_LATE_MIN: Number(process.env.HOURLY_LATE_MIN ?? 5),
+  // ---- Shift-hour enforcement ----
+  // Guards may check in / check out / upload hourly photos ONLY inside
+  // [shift.start - EARLY, shift.end + END_GRACE]. Outside -> 403.
+  SHIFT_CHECKIN_EARLY_MIN: Number(process.env.SHIFT_CHECKIN_EARLY_MIN ?? 30),
+  SHIFT_END_GRACE_MIN: Number(process.env.SHIFT_END_GRACE_MIN ?? 60),
+  // Watchdog auto-closes stale open attendance this long after shift end.
+  SHIFT_AUTO_CLOSE_AFTER_MIN: Number(process.env.SHIFT_AUTO_CLOSE_AFTER_MIN ?? 120),
 };
 
 if (cfg.JWT_SECRET === 'dev-secret-change-me' || cfg.ADMIN_PASS === 'admin123') {

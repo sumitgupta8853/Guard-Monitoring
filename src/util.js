@@ -1,13 +1,9 @@
-// Server-local date as YYYY-MM-DD (set the TZ env var to your timezone, e.g. TZ=Asia/Karachi)
-function localDate(d = new Date()) {
-  const p = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-}
+// Date/shift helpers live in utils/date (single source of truth);
+// re-exported here so legacy `require('../util')` keeps working.
+const dateUtils = require('./utils/date');
 
-// "HH:MM" -> minutes since midnight, or null if invalid
-function toMinutes(hhmm) {
-  const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(hhmm || '');
-  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+function localDate(d = new Date()) {
+  return dateUtils.localDate(d);
 }
 
 // Validate coordinates coming from JSON or multipart forms
@@ -27,4 +23,11 @@ function distanceMeters(lat1, lon1, lat2, lon2) {
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
-module.exports = { localDate, toMinutes, readCoords, distanceMeters };
+module.exports = {
+  localDate,
+  toMinutes: dateUtils.toMinutes,
+  nowMinutes: dateUtils.nowMinutes,
+  shiftStatus: dateUtils.shiftStatus,
+  fmtMinutes: dateUtils.fmtMinutes,
+  readCoords, distanceMeters,
+};

@@ -6,7 +6,7 @@ const { uploader, checkImage, removeFile } = require('../upload');
 const monitor = require('../monitor');
 const notify = require('../notify');
 const cfg = require('../config');
-const { readCoords, distanceMeters, localDate, toMinutes } = require('../util');
+const { readCoords, distanceMeters, localDate, toMinutes, shiftStatus, fmtMinutes } = require('../util');
 
 router.use(requireAuth('guard'));
 
@@ -47,7 +47,29 @@ router.post('/change-password', (req, res) => {
   res.json({ ok: true });
 });
 
-// ---------- attendance: check-in (photo + location, must be inside the area) ----------
+// ---------- attendance: check-in (photo + location, must be inside the area, WITHIN SHIFT HOURS) ----------
+// Gate: only inside [shift.start - SHIFT_CHECKIN_EARLY_MIN, shift.end + SHIFT_END_GRACE_MIN].
+// Guards without a valid shift.start are allowed (back-compat).
+function shiftGate(g, now = new Date()) {
+  const st = shiftStatus(
+    g.shift, now,
+    { earlyAllowMin: cfg.SHIFT_CHECKIN_EARLY_MIN, endGraceMin: cfg.SHIFT_END_GRACE_MIN }
+  );
+  if (st.ok) return null;
+  const tz = process.env.TZ || 'Asia/Kolkata';
+  const base = {
+    reason: st.reason,
+    shiftStart: (g.shift && g.shift.start) || null,
+    shiftEnd: (g.shift && g.shift.end) || null,
+    shiftWindowLocal: `${fmtMinutes(st.earlyOpen)}–${fmtMinutes(st.hardClose)}`,
+    tz,
+  };
+  if (st.reason === 'SHIFT_NOT_STARTED') {
+    return { code: 403, error: `Your shift starts at ${base.shiftStart} — check-in opens at ${fmtMinutes(st.earlyOpen)}. Please wait.`, extra: base };
+  }
+  return { code: 403, error: `Your shift ended at ${base.shiftEnd} — attendance is closed. Contact admin if you need overtime.`, extra: base };
+}
+
 router.post('/attendance/check-in', uploader('attendance').single('photo'), (req, res) => {
   const fail = (code, error, extra = {}) => { removeFile(req.file && req.file.path); return res.status(code).json({ error, ...extra }); };
   const g = req.guard;
@@ -66,6 +88,8 @@ router.post('/attendance/check-in', uploader('attendance').single('photo'), (req
   const today = localDate();
   if (db.attendance.some((a) => a.guardId === g.id && a.date === today))
     return fail(409, 'your attendance for today is already completed');
+  const gate = shiftGate(g, new Date());
+  if (gate) return fail(gate.code, gate.error, gate.extra);
   if (c.accuracy > cfg.MAX_ACCURACY_M)
     return fail(422, `GPS accuracy is too low (${Math.round(c.accuracy)}m). Move to open sky and try again.`);
 
@@ -99,12 +123,14 @@ router.post('/attendance/check-in', uploader('attendance').single('photo'), (req
   res.status(201).json(attView(att));
 });
 
-// ---------- attendance: check-out (photo optional, must be back inside the area) ----------
+// ---------- attendance: check-out (photo optional, must be back inside the area, WITHIN SHIFT HOURS) ----------
 router.post('/attendance/check-out', uploader('attendance').single('photo'), (req, res) => {
   const fail = (code, error, extra = {}) => { removeFile(req.file && req.file.path); return res.status(code).json({ error, ...extra }); };
   const g = req.guard;
   const att = monitor.openAttendance(g.id);
   if (!att) return fail(409, 'you are not checked in');
+  const gateOut = shiftGate(g, new Date());
+  if (gateOut) return fail(gateOut.code, gateOut.error, gateOut.extra);
   if (req.file && !checkImage(req.file.path)) return fail(400, 'invalid image');
   const c = readCoords(req.body);
   if (!c) return fail(400, 'valid lat and lng are required');
