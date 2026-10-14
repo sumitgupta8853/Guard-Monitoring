@@ -29,6 +29,8 @@ async function raiseAlert(guard, type, message, extra = {}) {
     const old = await Alert.find().sort({ time: 1 }).limit(count - 5000).select('_id');
     await Alert.deleteMany({ _id: { $in: old.map((a) => a._id) } });
   }
+
+  //check//
   toAdmins('alert', alert.toJSON());
   console.log(`[ALERT] ${type}: ${message}`);
   // Background push (FCM) to all admin devices — fire-and-forget so a
